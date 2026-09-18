@@ -12,9 +12,9 @@ on:
         required: false
         default: "0.29.0"
       cuda_version:
-        description: "CUDA toolkit version for Jimver/cuda-toolkit (e.g. 13.0.2, 13.0.3, 13.1.0, 13.2.0)"
+        description: "CUDA toolkit version for Jimver/cuda-toolkit (e.g. 13.0.2, 13.1.0, 13.2.0)"
         required: false
-        default: "13.0.2"
+        default: "13.2.0"
       torch_version:
         description: "PyTorch version (must match the CUDA index)"
         required: false
@@ -50,6 +50,18 @@ jobs:
     steps:
       - name: Checkout build scripts
         uses: actions/checkout@v4
+
+      - name: Enable git long paths
+        # CUTLASS (fetched as a submodule by fmha_sm100 via FetchContent)
+        # contains files with paths > 260 chars; Windows git refuses to
+        # check them out unless core.longpaths is enabled. This must be set
+        # at system/global scope so it also applies to the git processes
+        # spawned by CMake FetchContent during the build step.
+        shell: pwsh
+        run: |
+          git config --system core.longpaths true
+          git config --system core.autocrlf false
+          git config --system --list | Select-String longpaths
 
       - name: Setup Python 3.13
         uses: actions/setup-python@v5
