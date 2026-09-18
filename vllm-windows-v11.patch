@@ -2002,7 +2002,7 @@ index 4b3488b..ffaf756 100644
          # Pass the python path to cmake so it can reuse the build dependencies
          # on subsequent calls to python.
 -        cmake_args += ["-DVLLM_PYTHON_PATH={}".format(":".join(sys.path))]
-+        cmake_args += ["-DVLLM_PYTHON_PATH={}".format(":".join(sys.path).replace("\\", "/"))]
++        cmake_args += ["-DVLLM_PYTHON_PATH={}".format(os.pathsep.join(sys.path).replace("\\", "/"))]
  
          # Override the base directory for FetchContent downloads to $ROOT/.deps
          # This allows sharing dependencies between profiles,

@@ -111,6 +111,22 @@ jobs:
           git -C vllm-source apply ../vllm-windows-v11.patch
           git -C vllm-source status --short | Select-Object -First 10
 
+      - name: Disable ccache
+        # The GitHub windows runner image ships ccache. With ccache on PATH,
+        # vLLM's setup.py adds it as CMAKE_*_COMPILER_LAUNCHER, which this
+        # repo's own docs warn against (MSVC cl.exe 0xC000001D crashes and
+        # CUDA compiler-identification issues). Remove it so the build runs
+        # with plain compilers, same as the maintainer's local builds.
+        shell: pwsh
+        run: |
+          $ccache = Get-Command ccache -ErrorAction SilentlyContinue
+          if ($ccache) {
+            Write-Host "Removing ccache at $($ccache.Source)"
+            Remove-Item -Force $ccache.Source
+          } else {
+            Write-Host "ccache not present on PATH"
+          }
+
       - name: Build wheel
         shell: pwsh
         env:
