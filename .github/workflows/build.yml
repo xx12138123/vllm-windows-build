@@ -63,26 +63,6 @@ jobs:
           git config --system core.autocrlf false
           git config --system --list | Select-String longpaths
 
-      - name: Install modern GNU patch
-        # vLLM's CMakeLists runs `patch` to hotfix a torch 2.13 header
-        # (pytorch_stable_string.patch). The runner PATH resolves `patch` to
-        # Strawberry Perl's ancient GNU patch 2.5.9, which crashes with
-        # "Assertation failed ... Expression: hunk". Copy MSYS2's modern
-        # patch.exe (plus its msys-2.0.dll runtime) into an isolated directory
-        # and prepend it to PATH. Do NOT prepend C:\msys64\usr\bin wholesale:
-        # its coreutils link.exe would shadow MSVC's linker.
-        shell: pwsh
-        run: |
-          $msysPatch = "C:\msys64\usr\bin\patch.exe"
-          if (-not (Test-Path $msysPatch)) {
-            throw "Expected MSYS2 patch at $msysPatch but it was not found"
-          }
-          New-Item -ItemType Directory -Force -Path "C:\vllm-tools" | Out-Null
-          Copy-Item $msysPatch "C:\vllm-tools\"
-          Copy-Item "C:\msys64\usr\bin\msys-2.0.dll" "C:\vllm-tools\"
-          & "C:\vllm-tools\patch.exe" --version | Select-Object -First 1
-          "C:\vllm-tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
       - name: Setup Python 3.13
         uses: actions/setup-python@v5
         with:
@@ -130,6 +110,38 @@ jobs:
             "triton-windows${{ inputs.triton_version != '' && format('=={0}', inputs.triton_version) || '' }}"
           python -m pip install `
             setuptools wheel packaging ninja cmake setuptools-scm setuptools-rust
+
+      - name: Pre-patch torch stableivalue_conversions.h
+        # vLLM's CMakeLists hotfixes a torch 2.13 header by invoking `patch`
+        # when it still contains "auto strptr = new std::string". On GitHub
+        # runners `patch` resolves to Strawberry Perl's GNU patch 2.5.9
+        # (2001) which crashes with "Assertation failed ... Expression: hunk",
+        # and MSYS2 is no longer preinstalled either. Apply the identical
+        # transformation directly instead: with the trigger string gone, the
+        # CMake conditional skips the patch call and compiles the fixed header.
+        shell: pwsh
+        run: |
+          $inc = python -c "import torch, os; print(os.path.join(os.path.dirname(torch.__file__), 'include'))"
+          if ($LASTEXITCODE -ne 0) { throw "torch is not importable" }
+          $hdr = Join-Path $inc "torch\csrc\stable\stableivalue_conversions.h"
+          if (-not (Test-Path $hdr)) { throw "Header not found: $hdr" }
+          $c = [IO.File]::ReadAllText($hdr)
+          if ($c.Contains("auto strptr = new std::string")) {
+            $c = $c.Replace(
+              "auto strptr = new std::string(data, length);",
+              "const auto str = std::string(data, length);")
+            $c = $c.Replace(
+              "// delete the old string before returning new string",
+              "// delete the old string")
+            $c = $c.Replace("return *strptr;", "return str;")
+            $c = $c.Replace(
+              "// Returns a new std::string; the string in val is deleted.",
+              "// Returns a std::string which owns its memory; the string in val is deleted.")
+            [IO.File]::WriteAllText($hdr, $c)
+            Write-Host "Patched $hdr"
+          } else {
+            Write-Host "Header already fixed upstream; nothing to do"
+          }
 
       - name: Clone vLLM source
         shell: pwsh
