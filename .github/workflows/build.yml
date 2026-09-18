@@ -1,0 +1,155 @@
+name: Windows build wheel
+
+on:
+  workflow_dispatch:
+    inputs:
+      vllm_version:
+        description: "vLLM tag to build (e.g. v0.29.0)"
+        required: false
+        default: "v0.29.0"
+      wheel_version:
+        description: "Version stamped into the wheel filename"
+        required: false
+        default: "0.29.0"
+      cuda_version:
+        description: "CUDA toolkit version for Jimver/cuda-toolkit"
+        required: false
+        default: "13.0.88"
+      torch_version:
+        description: "PyTorch version (must match the CUDA index)"
+        required: false
+        default: "2.13.0"
+      torch_index:
+        description: "PyTorch wheel index for the CUDA build"
+        required: false
+        default: "https://download.pytorch.org/whl/cu130"
+      triton_version:
+        description: "triton-windows version pin (empty = latest)"
+        required: false
+        default: ""
+      torch_cuda_arch_list:
+        description: "TORCH_CUDA_ARCH_LIST. NOTE: every extra arch adds hours. 8.6=Ampere, 8.9=Ada, 12.0=Blackwell"
+        required: false
+        default: "8.9"
+      max_jobs:
+        description: "MAX_JOBS. Keep at 2: higher parallelism intermittently crashes MSVC (0xC000001D)"
+        required: false
+        default: "2"
+
+concurrency:
+  group: windows-build-wheel-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build vLLM Windows wheel (${{ inputs.vllm_version }})
+    # A full build can run right up against the 6 h GitHub-hosted limit.
+    # Keep one arch in torch_cuda_arch_list unless you accept the risk.
+    runs-on: windows-latest
+    timeout-minutes: 350
+    steps:
+      - name: Checkout build scripts
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Setup MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install CUDA toolkit
+        id: cuda
+        uses: Jimver/cuda-toolkit@v0.2.24
+        with:
+          cuda: ${{ inputs.cuda_version }}
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "cufft", "curand", "cusolver", "cusparse", "nvrtc", "visual_studio_integration"]'
+
+      - name: Report CUDA toolchain
+        shell: pwsh
+        env:
+          CUDA_HOME: ${{ steps.cuda.outputs.CUDA_PATH }}
+        run: |
+          & "$env:CUDA_HOME\bin\nvcc.exe" --version
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "29.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          # torch first, from the CUDA index, so build extensions link against it
+          python -m pip install `
+            "torch==${{ inputs.torch_version }}" `
+            --index-url ${{ inputs.torch_index }}
+          python -m pip install `
+            "triton-windows${{ inputs.triton_version != '' && format('=={0}', inputs.triton_version) || '' }}"
+          python -m pip install `
+            setuptools wheel packaging ninja cmake setuptools-scm setuptools-rust
+
+      - name: Clone vLLM source
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch ${{ inputs.vllm_version }} `
+            https://github.com/vllm-project/vllm.git vllm-source
+          git -C vllm-source log --oneline -1
+
+      - name: Apply Windows patch
+        shell: pwsh
+        run: |
+          git -C vllm-source apply --check ../vllm-windows-v11.patch
+          if ($LASTEXITCODE -ne 0) { throw "vllm-windows-v11.patch does not apply cleanly" }
+          git -C vllm-source apply ../vllm-windows-v11.patch
+          git -C vllm-source status --short | Select-Object -First 10
+
+      - name: Build wheel
+        shell: pwsh
+        env:
+          CUDA_HOME: ${{ steps.cuda.outputs.CUDA_PATH }}
+          VLLM_TARGET_DEVICE: cuda
+          SETUPTOOLS_SCM_PRETEND_VERSION: ${{ inputs.wheel_version }}
+          TORCH_CUDA_ARCH_LIST: ${{ inputs.torch_cuda_arch_list }}
+          MAX_JOBS: ${{ inputs.max_jobs }}
+          CMAKE_BUILD_TYPE: Release
+          VLLM_DISABLE_SCCACHE: "1"
+          # Make sure no stale precompiled flag leaks into the build
+          VLLM_USE_PRECOMPILED: ""
+          DISTUTILS_USE_SDK: "1"
+        run: |
+          cd vllm-source
+          python -m pip wheel . --no-build-isolation --no-deps -w ../dist -v
+
+      - name: Smoke test (import built wheel)
+        # Best-effort: the runner has no NVIDIA GPU/driver, so a failure here
+        # does not necessarily invalidate the wheel.
+        continue-on-error: true
+        shell: pwsh
+        env:
+          CUDA_HOME: ${{ steps.cuda.outputs.CUDA_PATH }}
+        run: |
+          python -m pip install (Get-ChildItem ../dist/*.whl).FullName --no-deps
+          python -c "import vllm; print('imported vllm', vllm.__version__)"
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vllm-${{ inputs.wheel_version }}-cp313-cp313-win_amd64
+          path: dist/*.whl
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Print wheel SHA-256
+        shell: pwsh
+        run: |
+          Get-ChildItem dist/*.whl | ForEach-Object {
+            (Get-FileHash $_.FullName -Algorithm SHA256).Hash + "  " + $_.Name
+          }
