@@ -63,6 +63,26 @@ jobs:
           git config --system core.autocrlf false
           git config --system --list | Select-String longpaths
 
+      - name: Install modern GNU patch
+        # vLLM's CMakeLists runs `patch` to hotfix a torch 2.13 header
+        # (pytorch_stable_string.patch). The runner PATH resolves `patch` to
+        # Strawberry Perl's ancient GNU patch 2.5.9, which crashes with
+        # "Assertation failed ... Expression: hunk". Copy MSYS2's modern
+        # patch.exe (plus its msys-2.0.dll runtime) into an isolated directory
+        # and prepend it to PATH. Do NOT prepend C:\msys64\usr\bin wholesale:
+        # its coreutils link.exe would shadow MSVC's linker.
+        shell: pwsh
+        run: |
+          $msysPatch = "C:\msys64\usr\bin\patch.exe"
+          if (-not (Test-Path $msysPatch)) {
+            throw "Expected MSYS2 patch at $msysPatch but it was not found"
+          }
+          New-Item -ItemType Directory -Force -Path "C:\vllm-tools" | Out-Null
+          Copy-Item $msysPatch "C:\vllm-tools\"
+          Copy-Item "C:\msys64\usr\bin\msys-2.0.dll" "C:\vllm-tools\"
+          & "C:\vllm-tools\patch.exe" --version | Select-Object -First 1
+          "C:\vllm-tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
       - name: Setup Python 3.13
         uses: actions/setup-python@v5
         with:
