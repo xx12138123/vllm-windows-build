@@ -31,5 +31,5 @@ jobs:
       - name: Validate current patch against upstream v0.27.1
         shell: pwsh
         run: |
-          git clone --depth 1 --branch v0.27.1 https://github.com/vllm-project/vllm.git patch-check
+          git clone --depth 1 --branch v0.29.0 https://github.com/vllm-project/vllm.git patch-check
           git -C patch-check apply --check ../vllm-windows-v10.patch
