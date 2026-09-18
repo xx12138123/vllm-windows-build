@@ -65,7 +65,10 @@ jobs:
         with:
           cuda: ${{ inputs.cuda_version }}
           method: network
-          sub-packages: '["nvcc", "cudart", "cublas", "cufft", "curand", "cusolver", "cusparse", "nvrtc", "visual_studio_integration"]'
+          # CUDA 13 reorganized the toolkit: crt (crt/host_config.h), nvvm
+          # (cicc + libdevice), nvptxcompiler and thrust are no longer bundled
+          # in the nvcc subpackage and must be requested explicitly.
+          sub-packages: '["nvcc", "crt", "nvvm", "nvptxcompiler", "thrust", "nvtx", "cudart", "cublas", "cufft", "curand", "cusolver", "cusparse", "nvrtc", "visual_studio_integration"]'
 
       - name: Report CUDA toolchain
         shell: pwsh
@@ -140,6 +143,9 @@ jobs:
           # Make sure no stale precompiled flag leaks into the build
           VLLM_USE_PRECOMPILED: ""
           DISTUTILS_USE_SDK: "1"
+          # Safety net: the runner's MSVC toolset (VS 18, _MSC_VER 19.5x) can
+          # be newer than the CUDA toolkit's host_config.h whitelist.
+          NVCC_PREPEND_FLAGS: "-allow-unsupported-compiler"
         run: |
           cd vllm-source
           python -m pip wheel . --no-build-isolation --no-deps -w ../dist -v
